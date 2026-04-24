@@ -1,15 +1,14 @@
 # Predictive Paradox — IITG.ai Recruitment Task
 
-my submission for the IITG.ai recruitment task. the problem was to forecast the next hour's electricity demand on Bangladesh's national grid using only classical ML — no LSTMs, no ARIMA, nothing like that. just tabular features and a tree-based model.
+my submission for the IITG.ai recruitment task. the problem was to forecast the next hour's electricity demand using only classical ML — no LSTMs, no ARIMA, nothing like that. just tabular features and a tree-based model.
 
 ---
 
 ## repo structure
 
 ```
-PredictiveParadox_Aadisankar.ipynb   # the full pipeline
-images/
-    feature_importance.png           # generated when you run the notebook
+AadisankarD_notebook_PredictiveParadox.ipynb   # the full pipeline
+images/feature_importance.png           
 README.md
 ```
 
@@ -96,4 +95,4 @@ plotted two views side by side — permutation importance and XGBoost's native g
 
 ![Feature Importance](images/feature_importance.png)
 
-top drivers ended up being lag_1h, rolling demand means at various windows, temperature, and hour-of-day. the economic features matter less individually but they anchor the long-run upward trend across years that lag features can't fully capture on their own.
+top drivers ended up being actual_need_estimate, generation_mw, lag_1h, rolling demand means at various windows, temperature, and hour-of-day. the economic features matter less individually but they anchor the long-run upward trend across years that lag features can't fully capture on their own.
