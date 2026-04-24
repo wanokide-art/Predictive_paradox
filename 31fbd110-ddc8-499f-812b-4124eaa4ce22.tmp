@@ -1,0 +1,99 @@
+# Predictive Paradox — IITG.ai Recruitment Task
+
+my submission for the IITG.ai recruitment task. the problem was to forecast the next hour's electricity demand on Bangladesh's national grid using only classical ML — no LSTMs, no ARIMA, nothing like that. just tabular features and a tree-based model.
+
+---
+
+## repo structure
+
+```
+PredictiveParadox_Aadisankar.ipynb   # the full pipeline
+images/
+    feature_importance.png           # generated when you run the notebook
+README.md
+```
+
+the three dataset files (PGCB_date_power_demand.xlsx, weather_data.xlsx, economic_full_1.csv) aren't in the repo — too large. mount them from Google Drive as shown at the top of the notebook.
+
+---
+
+## how to run
+
+1. put the three dataset files in your Google Drive
+2. open the notebook in Colab
+3. run `drive.mount('/content/drive')` and fix the file paths in Part 1 if they don't match your Drive structure
+4. run all cells in order
+
+numpy, pandas, matplotlib, seaborn, scikit-learn, xgboost are all standard Colab libraries. optuna gets pip installed inline in the notebook.
+
+---
+
+## what i did
+
+### data cleaning
+
+the raw PGCB data was messy — duplicate timestamps, missing generation columns for sources that didn't exist yet (solar, wind, imports from India/Nepal), and some really suspicious demand spikes.
+
+- solar/wind/import columns with NaNs → filled with 0. not interpolated because these weren't just missing readings, they genuinely weren't generating power in those years
+- fully duplicate rows → dropped. timestamps with two slightly different readings → averaged into one
+- outliers → rolling Z-score over a 7-day window, threshold 3.2. i went with 3.2 rather than the more common 2.5 because being too aggressive would clip real demand peaks, which are exactly what the model needs to learn
+- any post-2022 rows showing demand under 4000 MW → dropped, that's physically impossible for a grid this size
+
+### data integration
+
+the economic data (World Bank annual indicators — GDP, population, electricity access, energy use, industry output) came as a wide CSV. melted it to long format, pivoted by year, then merged onto the hourly series by matching calendar year. gaps between years filled with linear interpolation.
+
+weather data was already hourly, just needed to be rounded to the hour and merged on datetime. small gaps (≤3 consecutive hours) filled with time-based interpolation.
+
+### feature engineering
+
+since tree-based models have no built-in sense of time, i had to manually give the model a "memory" of the past. here's what i ended up with:
+
+**calendar stuff** — hour, day of week, day of month, month, quarter, is_weekend, is_friday, week of year
+
+**cyclical encoding** — sin/cos for hour, month, day-of-week. this matters because without it the model thinks hour 23 and hour 0 are far apart when they're actually adjacent
+
+**lag features** — lag_1h, 2h, 3h, 6h, 12h, 24h, 48h, 72h, 168h, and a lag_1month (same hour, one month ago). the 24h and 168h lags are the most useful for capturing daily and weekly patterns
+
+**rolling features** — rolling mean and std over 3h, 6h, 12h, 24h, 168h windows. critically, all of these are computed with `shift(1)` before the rolling window — this is how i avoided data leakage, every row only sees what was available *before* that hour
+
+**target-hour features** — calendar features for the hour being *predicted* (t+1), not the current hour. helps the model know what time it's forecasting into
+
+**interaction features** — heat_stress (temp × humidity), extreme_heat flag, solar_efficiency, renewable_share, import_share, fossil_load, evening_heat_stress, weekend_heat. also `actual_need_estimate` = demand + load_shedding, which corrects for the fact that recorded demand is artificially suppressed during load shedding events
+
+**target** — demand_mw shifted back by 1 row (next hour's demand)
+
+### train / test split
+
+everything before 2023-01-01 → training. 2023 onwards → hold-out test. no shuffling.
+
+one thing that tripped me up early: i initially split at 2022 and the model couldn't predict above ~14k MW. turned out demand above 14k only starts appearing from mid-2022, so those values were entirely absent from training. moving the cutoff to 2023 fixed it — tree models literally cannot predict outside the range they were trained on.
+
+### modeling
+
+ran three baselines first (GradientBoostingRegressor, XGBoostRegressor, RandomForestRegressor with default params) to see which was worth tuning. XGBoost came out ahead.
+
+tuned with Optuna — 15 trials, minimising MAE on a chronological 80/20 split within the training data. params tuned: n_estimators, learning_rate, max_depth, min_child_weight, subsample, colsample_bytree.
+
+final model adds reg_alpha=0.1 and reg_lambda=1.5 on top of the best Optuna params. also used sample weights to stop the model from ignoring high-demand rows: 1.5× above 9000 MW, 2.5× above 11000 MW, 4× above 13000 MW.
+
+---
+
+## results
+
+| metric | value |
+|---|---|
+| MAPE — full 2023 test set | 2.64% |
+| MAPE — >13000 MW subset only | 4.04% |
+
+2.64% on a full unseen year felt pretty good. the higher MAPE on the extreme demand region makes sense — those hours are rare in training even with sample weighting.
+
+---
+
+## feature importance
+
+plotted two views side by side — permutation importance and XGBoost's native gain importance. permutation importance is generally more trustworthy because it measures how much prediction quality actually drops when you shuffle a feature, rather than just counting how many splits used it (which inflates continuous features like lag_1h).
+
+![Feature Importance](images/feature_importance.png)
+
+top drivers ended up being lag_1h, rolling demand means at various windows, temperature, and hour-of-day. the economic features matter less individually but they anchor the long-run upward trend across years that lag features can't fully capture on their own.
